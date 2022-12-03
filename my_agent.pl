@@ -36,6 +36,7 @@ initZero(X):-
   currentSquare/1,   %cordinates of the square the agent is current at (LIST)
   facing/1,          %which direction the agent is facing (n,e,s,w)    (LIST)
   visited/1,         %list of all the squares the agent has visited    (LIST)
+  oobTiles/1,
   actions/1,
   outOfBound/0,      %if the agent is out of bound                     (BOOL)
   frontier/3.        %keeps track of adjacent unvisited tiles and their danger levels
@@ -44,6 +45,7 @@ initZero(X):-
 %RESET AGENT
 clearAgent:-
   retractall(safeTiles(_)),
+  retractall(oobTiles(_)),
   retractall(canMakeSafeMove),
   retractall(foundWumpus),
   retractall(outOfBound),
@@ -62,35 +64,13 @@ init_agent:-
 
   clearAgent,
 
-  asserta(actions(enterDungeon)),
+  
   asserta(currentSquare([1,1])),
   asserta(safeTiles([1,1])),
-  asserta(visited([1,1])),
+  %asserta(visited([1,1])),
   asserta(facing(east)),
   %asserta(frontier([2,1],0,0)), %cords, pit level, wumpus level
   %asserta(frontier([1,2],0,0)),
-
-  assert(actions(turnleft)),
-  assert(actions(goforward)),
-  assert(actions(turnright)),
-  assert(actions(goforward)),
-
-  assert(actions(turnleft)),
-
-  assert(actions(goforward)),
-  assert(actions(grab)),
-
-  assert(actions(turnleft)),
-  assert(actions(turnleft)),
-  assert(actions(goforward)),
-  assert(actions(turnright)),
-
-
-  assert(actions(goforward)),
-  assert(actions(turnleft)),
-  assert(actions(goforward)),
-
-  assert(actions(climb)),
 
 
   format('====================================================I\n\n').
@@ -113,25 +93,68 @@ getCurrentDirection(Dir):-
 nearestSafe(Spot):- 
   safeTiles(Spot), !.
 
-getNextMove(Action):-
-  retract(actions(A)), !,
-  actions(Action), !.
+getNextMove(Action, Action2):-
+  (Action == enterDungeon, Action2 = turnright);
+  (Action == turnright, Action2 = climb);true.
+
+
+removeLastAction:-
+  retract(actions(A)), !.
 
 printAllFrontier:-  
   forall((frontier(D,-1,-1)), format('[~w,~w]  Safe\n', D)),
   forall((frontier(D,B,W), (B+W =\= -2)), format('~w  Pit: ~w  Wump: ~w\n', [D,B,W])).
 
+printAllThreats:-
+  forall((frontier(D,B,W), \+visited(D), \+safeTiles(D)), format('~w  Pit: ~w  Wump: ~w\n', [D,B,W])).
+
 printAllVisited:-
   forall(visited(V), format('[~w,~w] ', V)).
 
+printAllSafe:-
+  forall(safeTiles(S), format('[~w,~w] ', S)).
+
+printAllOob:-
+  forall(oobTiles(B), format('[~w,~w] ', B)).
+
+addSafe(S):-
+  (\+safeTiles(S),
+  assert(safeTiles(S)));true.
 
 addVisited(V):-
-  \+visited(V),
-  assert(visited(V)).
+  (\+visited(V),
+  assert(visited(V)));true.
+
+addOobTile(B):-
+  (\+oobTiles(B),
+  assert(oobTiles(B)), 
+  (frontier(B,_,_), retract(frontier(B,_,_)))
+  );true.
+
+
+
 
 movedToNewTile(Action, Position):-
   Action = goforward,
   \+visited(Position).
+
+
+
+
+
+%OUT OF BOUNDS 
+markOutOfBoundsTile(Pos, east):-
+  [X,Y] = Pos, incr(X,X1), addOobTile([X1,Y]).
+
+markOutOfBoundsTile(Pos, north):-
+  [X,Y] = Pos, incr(Y,Y1), addOobTile([X,Y1]).
+
+markOutOfBoundsTile(Pos, west):-
+  [X,Y] = Pos, decr(X,X1), addOobTile([X1,Y]).
+
+markOutOfBoundsTile(Pos, south):-
+  [X,Y] = Pos, decr(Y,Y1), addOobTile([X,Y1]).
+  
 
 
 
@@ -154,13 +177,21 @@ nextSquare([X,Y], south, [X1,Y1]) :- X1 is X, Y1 is Y - 1.
 nextSquare([X,Y], west, [X1,Y1]) :- X1 is X - 1, Y1 is Y.
 
 updatePosition([_,_,_,Bump,_], Action, Position, Direction):-
+  format('BUMP? ~w\n',Bump),
+  format('Action? ~w\n',Action),
   Action = goforward, Bump=no, nextSquare(Position, Direction, NewPosition), asserta(currentSquare(NewPosition)), updateCurrentTileThreat(NewPosition);
-  Action = goforward, Bump=yes;
+  Bump=yes, format('BUMP!\n'), bumpReverse(Percept, Position, Direction), updatePosition([no,no,no,no,no], Action, Position, Direction);
   Action = turnleft, lookLeft(Direction, NewDirection), asserta(facing(NewDirection));
   Action = turnright, lookRight(Direction, NewDirection), asserta(facing(NewDirection));
   Action = climb;
   Action = grab;
   Action = enterDungeon.
+
+updateAllFakeWumpus:-
+  forall((frontier([X,Y],B,W), (W =\= -1, W<2)), (retract(frontier([X,Y],B,W)), assert(frontier([X,Y],B,-1))));true.
+
+updateSafeTiles:-
+  forall(frontier([X,Y],-1,-1), addSafe([X,Y])).
 
 updateCurrentTileThreat(Position):-
   [X,Y] = Position,
@@ -182,12 +213,12 @@ updateFrontier(Cords):-
   ((\+frontier([X,Y3],_,_), assert(frontier([X,Y3],0,0)));true).
 
 
+
 %if the tile has not been visited, mark it as visited
 haveNotVisited(CurrentPos):-
   \+visited(CurrentPos),
   addVisited(CurrentPos),
-  updateFrontier(CurrentPos),
-  assert(safeTiles(CurrentPos)).
+  updateFrontier(CurrentPos).
 
 %should the agent asses the threat at this tile.
 %if the tile has already been visited then no, return true.
@@ -216,6 +247,75 @@ updateAction(Percepts, Action, Position, Facing):-
 %assessThreat([_, _, _, yes, _], _). %bump
 %assessThreat([_, _, _, _, yes], CurrentPos):- %scream 
   %replace every threatLevel list element to have a wumpus threat level of 0%
+
+wasThatWumpus(Cords):-
+  \+foundWumpus,
+  [X,Y] = Cords,
+  frontier([X,Y],_,W),
+  W > 1,
+  assert(foundWumpus),
+  assert(wumpusLocation([X,Y])),
+  retract(frontier([X,Y],_,W)),
+  assert(frontier([X,Y],-1,W)).
+
+noPit(Cords):-
+  [X,Y] = Cords,
+  frontier([X,Y],A,B),
+  format('No Pit?...[~w,~w], ~w, ~w\n', [X,Y,A,B]),
+  frontier([X,Y],-1,_), format(' True\n').
+
+noWumpus(Cords):-
+  [X,Y] = Cords,
+  frontier([X,Y],A,B),
+  format('No Wumpus?...[~w,~w], ~w, ~w\n', [X,Y,A,B]),
+  frontier([X,Y],_,-1).
+
+safeTile(Cords):- 
+  [X,Y] = Cords,
+  frontier([X,Y],-1,-1),
+  format('Tile is safe\n').
+
+isWumpusTile(Cords):-
+  [X,Y] = Cords,
+  (foundWumpus, frontier([X,Y],_,Wump), (Wump > 1)), %this is the wumpus tile, dont alter.
+  format('Wumpus is on this tile\n').
+
+updateOnlyW(Cords):- %no pit, increase W
+  [X,Y] = Cords,
+  (\+foundWumpus, 
+  retract(frontier([X,Y], -1, W)), 
+  incr(W, W2), 
+  assert(frontier([X,Y], -1, W2))),
+  format('No pit, W increased only\n'),
+  wasThatWumpus([X,Y]); 
+  true.
+
+updateOnlyP(Cords):- %no wumpus increase P threat
+  [X,Y] = Cords,
+  retract(frontier([X,Y], P, -1)), 
+  incr(P, P2), 
+  assert(frontier([X,Y], P2, -1)),
+  format('No Wumpus, increased only P\n').
+
+updatePW(Cords):-
+  [X,Y] = Cords,
+  (retract(frontier([X,Y], PTL1, WTL1)), 
+  incr(PTL1, NewPTL1), 
+  ((\+foundWumpus, incr(WTL1, NewWTL1)); NewWTL1 is -1), 
+  assert(frontier([X,Y], NewPTL1, NewWTL1)), 
+  format('Updated Both P and W (~w,~w)', [PTL1, WTL1]), format('->(~w,~w)\n', [NewPTL1, NewWTL1]),
+  (wasThatWumpus([X,Y]);true));
+  true.
+
+
+stenchBreezeUpdate(Cords):-
+  [X,Y] = Cords,
+  format('Updating [~w,~w]...\n', [X,Y]),
+  (safeTile([X,Y]);
+  isWumpusTile([X,Y]);
+  (noPit([X,Y]), updateOnlyW([X,Y]));
+  (noWumpus([X,Y]), updateOnlyP([X,Y]));
+  updatePW([X,Y])),!.
 
 %NO DANGER
 assessThreat([no, no, _, _, _], CurrentPos):-
@@ -289,7 +389,6 @@ assessThreat([yes, no, _, _, _], CurrentPos):-
   %WTL stands for Wumpus Threat Level
   %PTL stands for Pit Threat Level
   %update the threat levels for the square to the right
-  ((foundWumpus, format('FOUND WUMPUS!!\n')); format('Wumpus Hidden\n')),
 
   incr(X,X2),
   (\+visited([X2,Y]),
@@ -332,103 +431,79 @@ assessThreat([yes, no, _, _, _], CurrentPos):-
 
 %STENCH AND BREEZE
 assessThreat([yes, yes, _, _, _], CurrentPos):-  
-  [X,Y] = CurrentPos,
+  [X,Y] = CurrentPos, (([X,Y] == [2,3], format('Reached double square\n'));true),
+  %((frontier([3,3],QQQ,WWW), format('In frontier: [~w,~w]\n', [QQQ,WWW]));true),
   %WTL stands for Wumpus Threat Level
   %PTL stands for Pit Threat Level
+
   %update the threat levels for the square to the right
-  incr(X,X2),
-  (\+visited([X2,Y]),
-  (
-    (frontier([X2,Y], -1, -1)); %if this square is safe don't touch it
-    ((\+foundWumpus, retract(frontier([X2,Y], -1, W)), incr(W, W2), assert(frontier([X2,Y], -1, W2)), (W2 > 1, assert(foundWumpus), assert(wumpusLocation([X2,Y]))));true), %incr the W if we know a pit isnt there
-    ((retract(frontier([X2,Y], P, -1)), incr(P, P2), assert(frontier([X2,Y], P2, -1)));true),                                                             %incr the P threat if we know wumpus isnt there
-    ((retract(frontier([X2,Y], PTL1, WTL1)), incr(PTL1, NewPTL1), ((\+foundWumpus, incr(WTL1, NewWTL1)); NewWTL1 is -1)); (NewPTL1 is 1, NewWTL1 is 1)),  %initialize the threat values
-    ((NewWTL1 > 1, assert(foundWumpus), assert(wumpusLocation([X2,Y])), assert(frontier([X2,Y], NewPTL1, NewWTL1))); assert(frontier([X2,Y], NewPTL1, NewWTL1))) %assert
-  );true),
+  incr(X,Right),
+  (((\+visited([Right,Y]), \+safeTiles([Right,Y])), stenchBreezeUpdate([Right,Y]));true), 
+  format('Passed Right Tile\n'),
 
   %update the threat levels for the square above
-  incr(Y,Y2), 
-  (\+visited([X,Y2]),
-  (
-    (frontier([X,Y2], -1, -1)); %if this square is safe don't touch it
-    (\+foundWumpus, retract(frontier([X,Y2], -1, W1)), incr(W1, W12), assert(frontier([X,Y2], -1, W12)), (W12 > 1, assert(foundWumpus), assert(wumpusLocation([X,Y2])));true),
-    ((retract(frontier([X,Y2], P1, -1)), incr(P1, P12), assert(frontier([X,Y2], P12, -1)));true),
-    ((retract(frontier([X,Y22], PTL2, WTL2)), incr(PTL2, NewPTL2), ((\+foundWumpus, incr(WTL2, NewWTL2)); NewWTL2 is -1)); (NewPTL2 is 1, NewWTL2 is 1)), 
-    ((NewWTL2 > 1, assert(foundWumpus), assert(wumpusLocation([X,Y2])), assert(frontier([X,Y2], NewPTL2, NewWTL2))); assert(frontier([X,Y2], NewPTL2, NewWTL2)))
-  );true),
+  incr(Y,Up), 
+  (((\+visited([X,Up]), \+safeTiles([X,Up])), stenchBreezeUpdate([X,Up]));true),
+  format('Passed Up Tile\n'),
 
   %update the threat levels for the square to the left
-  decr(X,X22),
-  (\+visited([X22,Y]),
-  (
-    ((frontier([X22,Y], -1, -1)); (frontier([X22,Y], _, 2))); %if this square is safe don't touch it
-    ((\+foundWumpus, retract(frontier([X22,Y], -1, W3)), incr(W3, W32), assert(frontier([X22,Y], -1, W32)), (W32 > 1, assert(foundWumpus), assert(wumpusLocation([X22,Y]))));true),
-    ((retract(frontier([X22,Y], P3, -1)), incr(P3, P32), assert(frontier([X22,Y], P32, -1)));true),
-    ((retract(frontier([X22,Y], PTL3, WTL3)), incr(PTL3, NewPTL3), ((\+foundWumpus, incr(WTL3, NewWTL3)); NewWTL3 is -1)); (NewPTL3 is 1, NewWTL3 is 1)), 
-    ((NewWTL3 > 1, assert(foundWumpus), assert(wumpusLocation([X22,Y])), assert(frontier([X22,Y], NewPTL3, NewWTL3))); assert(frontier([X22,Y], NewPTL3, NewWTL3)))
-  );true),
+  decr(X,Left),
+  (((\+visited([Left,Y]), \+safeTiles([Left,Y])), stenchBreezeUpdate([Left,Y]));true),
+  format('Passed Left Tile\n'),
+ 
+  % %sqaure below
+  decr(Y,Down),
+  (((\+visited([X,Down]), \+safeTiles([X,Down])), stenchBreezeUpdate([X,Down]));true),
+  format('Passed Down Tile\n'),
 
-  %update the threat levels for the square below
-  decr(Y,Y22),
-  (\+visited([X,Y22]),
-  (
-    (frontier([X,Y22], -1, -1)); %if this square is safe don't touch it
-    ((\+foundWumpus, retract(frontier([X,Y22], -1, W4)), incr(W4, W42), assert(frontier([X,Y22], -1, W42)), (W42 > 1, assert(foundWumpus), assert(wumpusLocation([X,Y22]))));true),
-    ((retract(frontier([X,Y22], P4, -1)), incr(P4, P42), assert(frontier([X,Y22], P42, -1)));true),
-    ((retract(frontier([X,Y22], PTL4, WTL4)), incr(PTL4, NewPTL4), ((\+foundWumpus, incr(WTL4, NewWTL4)); NewWTL4 is -1)); (NewPTL4 is 1, NewWTL4 is 1)),
-    ((NewWTL4 > 1, assert(foundWumpus), assert(wumpusLocation([X,Y22])), assert(frontier([X,Y22], NewPTL4, NewWTL4))); assert(frontier([X,Y22], NewPTL4, NewWTL4)))
-  );true).
+  ((foundWumpus, updateAllFakeWumpus);true).
+
+
+bumpReverse(Percept, Pos, D):-
+
+  retract(currentSquare(Pos)),
+  getCurrentPosition(P2),
+  markOutOfBoundsTile(P2, D),
+  
+  retract(visited(Pos)),
+  retract(safeTiles(Pos)); true.
 
 
 %RUN AGENT MAIN FUNCTION
 run_agent(Percepts,Action):-
   format('\n====================================================R1\n'),
   display_world,   
-  
 
   %Where is the agent right now, and what should be its next move
-  getLastAction(LastAction),    
-
+    
   getCurrentPosition(CurrentPosition),   
-
-  getCurrentDirection(CurrentDirection),   
-
-  
+  getCurrentDirection(CurrentDirection),  
 
   %have i been here before? if no, then mark as visited and asses threat
                            %if yes, do not mark as visited, and do not asses threat
-  shouldAgentAsses(CurrentPosition, Percepts),   
+  shouldAgentAsses(CurrentPosition, Percepts),
+  updateSafeTiles,  
 
   getNextMove(Action),   
 
-
-  format('LAST ACTION:         ~w\n', LastAction),
   format('NEXT ACTION:         ~w\n', Action),
   format('CURRENT POSITION:    [~w,~w]\n', CurrentPosition),
   format('CURRENT DIRECTION:   ~w\n\n', CurrentDirection),
   ((foundWumpus, wumpusLocation(WL), format('WUMPUS FOUND: [~w,~w]\n', WL));true), 
-  format('VISITED: '), printAllVisited,
-  format('\n\nTHREATS:\n'), printAllFrontier,
-
+  format('VISITED:  '), printAllVisited,
+  format('\nSAFE:     '), printAllSafe,
+  format('\nOOB:    '), printAllOob,
+  format('\n\nTHREATS:\n'), printAllThreats,
 
   %Begin taking action
-
   updatePosition(Percepts, Action, CurrentPosition, CurrentDirection),
-
-  % getCurrentPosition(CurrentPosition),
- 
-
-
-
-  % updatePosition(Percepts, LastAction, CurrentPosition, CurrentDirection),
-  % getCurrentPosition(CurrentPosition), 
-  % getCurrentDirection(CurrentDirection),
-
-  % updateAction(Percepts, Action, CurrentPosition, CurrentDirection).
-
-
+  removeLastAction,
 
   format('\n====================================================R2\n\n').
+
+
+
+
 
 
 
